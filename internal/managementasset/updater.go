@@ -25,7 +25,6 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/Ai-Data-Man/Cli-Proxy-API-Management-Center/releases/latest"
 	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
 	managementAssetName          = "management.html"
 	httpUserAgent                = "CLIProxyAPI-management-updater"
@@ -33,6 +32,17 @@ const (
 	updateCheckInterval          = 3 * time.Hour
 	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
 )
+
+var defaultManagementReleaseURL = "https://api.github.com/repos/Ai-Data-Man/Cli-Proxy-API-Management-Center/releases/latest"
+
+// getManagementReleaseURL returns the management release URL, checking the
+// CLIPROXYAPI_PANEL_RELEASE_URL environment variable for an override first.
+func getManagementReleaseURL() string {
+	if env := strings.TrimSpace(os.Getenv("CLIPROXYAPI_PANEL_RELEASE_URL")); env != "" {
+		return env
+	}
+	return defaultManagementReleaseURL
+}
 
 // ManagementFileName exposes the control panel asset filename.
 const ManagementFileName = managementAssetName
@@ -303,12 +313,12 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 func resolveReleaseURL(repo string) string {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
-		return defaultManagementReleaseURL
+		return getManagementReleaseURL()
 	}
 
 	parsed, err := url.Parse(repo)
 	if err != nil || parsed.Host == "" {
-		return defaultManagementReleaseURL
+		return getManagementReleaseURL()
 	}
 
 	host := strings.ToLower(parsed.Host)
@@ -329,12 +339,12 @@ func resolveReleaseURL(repo string) string {
 		}
 	}
 
-	return defaultManagementReleaseURL
+	return getManagementReleaseURL()
 }
 
 func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
 	if strings.TrimSpace(releaseURL) == "" {
-		releaseURL = defaultManagementReleaseURL
+		releaseURL = getManagementReleaseURL()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releaseURL, nil)
