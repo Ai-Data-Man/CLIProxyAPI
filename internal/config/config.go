@@ -19,11 +19,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var DefaultPanelGitHubRepository = "https://github.com/Ai-Data-Man/Cli-Proxy-API-Management-Center"
+
 const (
-	DefaultPanelGitHubRepository = "https://github.com/Ai-Data-Man/Cli-Proxy-API-Management-Center"
-	DefaultPprofAddr             = "127.0.0.1:8316"
-	DefaultAuthDir               = "~/.cli-proxy-api"
+	DefaultPprofAddr = "127.0.0.1:8316"
+	DefaultAuthDir   = "~/.cli-proxy-api"
 )
+
+func init() {
+	if env := os.Getenv("CLIPROXYAPI_PANEL_REPO"); env != "" {
+		DefaultPanelGitHubRepository = env
+	}
+}
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
