@@ -794,6 +794,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	}
 
+	// CLIPROXYAPI_PANEL_REPO env var overrides config.yaml value (highest priority)
+	if envPanel := os.Getenv("CLIPROXYAPI_PANEL_REPO"); envPanel != "" {
+		cfg.RemoteManagement.PanelGitHubRepository = envPanel
+	}
+
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
 		cfg.Pprof.Addr = DefaultPprofAddr
