@@ -106,6 +106,21 @@ type TokenStats struct {
 	TotalTokens     int64 `json:"total_tokens"`
 }
 
+// UserUsage is a safe aggregate view of a single API key's usage, with no raw request details.
+type UserUsage struct {
+	TotalRequests int64                    `json:"total_requests"`
+	SuccessCount  int64                    `json:"success_count"`
+	FailureCount  int64                    `json:"failure_count"`
+	TotalTokens   int64                    `json:"total_tokens"`
+	Models        map[string]UserModelUsage `json:"models"`
+}
+
+// UserModelUsage summarises usage for a single model, without per-request timestamps.
+type UserModelUsage struct {
+	TotalRequests int64 `json:"total_requests"`
+	TotalTokens   int64 `json:"total_tokens"`
+}
+
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
 type StatisticsSnapshot struct {
 	TotalRequests int64 `json:"total_requests"`
@@ -281,6 +296,39 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 		result.TokensByHour[key] = v
 	}
 
+	return result
+}
+
+// GetAPIStats returns aggregated usage for a single API key without exposing raw request details.
+func (s *RequestStatistics) GetAPIStats(apiKey string) *UserUsage {
+	if s == nil || apiKey == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	stats, ok := s.apis[apiKey]
+	if !ok {
+		return nil
+	}
+	result := &UserUsage{
+		TotalRequests: stats.TotalRequests,
+		TotalTokens:   stats.TotalTokens,
+		Models:        make(map[string]UserModelUsage, len(stats.Models)),
+	}
+	for modelName, ms := range stats.Models {
+		m := UserModelUsage{
+			TotalRequests: ms.TotalRequests,
+			TotalTokens:   ms.TotalTokens,
+		}
+		result.Models[modelName] = m
+		for _, d := range ms.Details {
+			if d.Failed {
+				result.FailureCount++
+			} else {
+				result.SuccessCount++
+			}
+		}
+	}
 	return result
 }
 
