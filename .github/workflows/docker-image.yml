@@ -41,6 +41,7 @@ jobs:
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
+            GITHUB_REPO=${{ github.repository }}
           tags: |
             ${{ env.DOCKERHUB_REPO }}:latest-amd64
             ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-amd64
@@ -76,6 +77,7 @@ jobs:
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
+            GITHUB_REPO=${{ github.repository }}
           tags: |
             ${{ env.DOCKERHUB_REPO }}:latest-arm64
             ${{ env.DOCKERHUB_REPO }}:${{ env.VERSION }}-arm64
