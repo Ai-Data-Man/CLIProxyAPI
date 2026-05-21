@@ -12,4 +12,7 @@ var (
 
 	// BuildDate records when the binary was built in UTC.
 	BuildDate = "unknown"
+
+	// GitHubRepo is the "owner/repo" used to query latest release.
+	GitHubRepo = "router-for-me/CLIProxyAPI"
 )

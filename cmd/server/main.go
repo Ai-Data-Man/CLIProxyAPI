@@ -42,6 +42,7 @@ var (
 	Version           = "dev"
 	Commit            = "none"
 	BuildDate         = "unknown"
+	GitHubRepo        = "router-for-me/CLIProxyAPI"
 	DefaultConfigPath = ""
 )
 
@@ -51,6 +52,7 @@ func init() {
 	buildinfo.Version = Version
 	buildinfo.Commit = Commit
 	buildinfo.BuildDate = BuildDate
+	buildinfo.GitHubRepo = GitHubRepo
 }
 
 func shouldStartExampleAPIKeyWarningServer(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode bool) bool {
