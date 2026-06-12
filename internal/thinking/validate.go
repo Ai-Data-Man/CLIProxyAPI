@@ -115,15 +115,31 @@ func ValidateConfig(config ThinkingConfig, modelInfo *registry.ModelInfo, fromFo
 
 	if len(support.Levels) > 0 && config.Mode == ModeLevel {
 		if !isLevelSupported(string(config.Level), support.Levels) {
-			if allowClampUnsupported {
+			// For canonical levels (known in standardLevelOrder), accept with clamping
+			// instead of hard error. This allows standard levels (minimal, low, medium,
+			// high, xhigh, max) to work for any thinking-capable model without requiring
+			// each model's registry entry to enumerate every supported level.
+			if levelIndex(string(config.Level)) != -1 {
+				// Deepseek models pass "max" through as-is — the registry may not list
+				// "max" even though the upstream API supports it. For other models,
+				// clamping "max" to the nearest supported level (typically "high") avoids
+				// sending a level the upstream might reject.
+				if !(strings.Contains(strings.ToLower(model), "deepseek") && strings.EqualFold(string(config.Level), "max")) {
+					config.Level = clampLevel(config.Level, modelInfo, toFormat)
+				}
+			} else if allowClampUnsupported {
 				config.Level = clampLevel(config.Level, modelInfo, toFormat)
 			}
 			if !isLevelSupported(string(config.Level), support.Levels) {
-				// User explicitly specified an unsupported level - return error
-				// (budget-derived levels may be clamped based on source format)
-				validLevels := normalizeLevels(support.Levels)
-				message := fmt.Sprintf("level %q not supported, valid levels: %s", strings.ToLower(string(config.Level)), strings.Join(validLevels, ", "))
-				return nil, NewThinkingError(ErrLevelNotSupported, message)
+				// Accept known canonical levels even if still not in the model's
+				// support list after clamping (e.g. deepseek "max" bypass).
+				// The upstream API validates if the level is truly unsupported.
+				if levelIndex(string(config.Level)) == -1 {
+					// Unknown/non-canonical level — hard error
+					validLevels := normalizeLevels(support.Levels)
+					message := fmt.Sprintf("level %q not supported, valid levels: %s", strings.ToLower(string(config.Level)), strings.Join(validLevels, ", "))
+					return nil, NewThinkingError(ErrLevelNotSupported, message)
+				}
 			}
 		}
 	}
