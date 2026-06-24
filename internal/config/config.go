@@ -512,6 +512,11 @@ type ClaudeKey struct {
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
+	// CooldownSeconds overrides the initial 429 quota cooldown duration in seconds.
+	// When > 0, this value replaces the default 1-second base cooldown for this credential.
+	// Subsequent backoff still doubles the cooldown up to the 30-minute maximum.
+	CooldownSeconds int `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
+
 	// Cloak configures request cloaking for non-Claude-Code clients.
 	Cloak *CloakConfig `yaml:"cloak,omitempty" json:"cloak,omitempty"`
 
@@ -570,6 +575,11 @@ type CodexKey struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// CooldownSeconds overrides the initial 429 quota cooldown duration in seconds.
+	// When > 0, this value replaces the default 1-second base cooldown for this credential.
+	// Subsequent backoff still doubles the cooldown up to the 30-minute maximum.
+	CooldownSeconds int `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
 }
 
 func (k CodexKey) GetAPIKey() string  { return k.APIKey }
@@ -617,6 +627,11 @@ type GeminiKey struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// CooldownSeconds overrides the initial 429 quota cooldown duration in seconds.
+	// When > 0, this value replaces the default 1-second base cooldown for this credential.
+	// Subsequent backoff still doubles the cooldown up to the 30-minute maximum.
+	CooldownSeconds int `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
 }
 
 func (k GeminiKey) GetAPIKey() string  { return k.APIKey }
@@ -664,6 +679,11 @@ type OpenAICompatibility struct {
 
 	// DisableCooling disables auth/model cooldown scheduling for this provider when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
+
+	// CooldownSeconds overrides the initial 429 quota cooldown duration in seconds.
+	// When > 0, this value replaces the default 1-second base cooldown for this provider.
+	// Subsequent backoff still doubles the cooldown up to the 30-minute maximum.
+	CooldownSeconds int `yaml:"cooldown-seconds,omitempty" json:"cooldown-seconds,omitempty"`
 }
 
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.

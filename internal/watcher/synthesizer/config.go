@@ -64,6 +64,9 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 		if entry.DisableCooling {
 			metadata["disable_cooling"] = true
 		}
+		if entry.CooldownSeconds > 0 {
+			metadata["cooldown_seconds"] = entry.CooldownSeconds
+		}
 		if entry.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(entry.Priority)
 		}
@@ -119,6 +122,9 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 		if ck.DisableCooling {
 			metadata["disable_cooling"] = true
 		}
+		if ck.CooldownSeconds > 0 {
+			metadata["cooldown_seconds"] = ck.CooldownSeconds
+		}
 		if ck.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(ck.Priority)
 		}
@@ -173,6 +179,9 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		metadata := map[string]any{}
 		if ck.DisableCooling {
 			metadata["disable_cooling"] = true
+		}
+		if ck.CooldownSeconds > 0 {
+			metadata["cooldown_seconds"] = ck.CooldownSeconds
 		}
 		if ck.Priority != 0 {
 			attrs["priority"] = strconv.Itoa(ck.Priority)
@@ -247,6 +256,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			if disableCooling {
 				metadata["disable_cooling"] = true
 			}
+			if compat.CooldownSeconds > 0 {
+				metadata["cooldown_seconds"] = compat.CooldownSeconds
+			}
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)
 			}
@@ -288,6 +300,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			metadata := map[string]any{}
 			if disableCooling {
 				metadata["disable_cooling"] = true
+			}
+			if compat.CooldownSeconds > 0 {
+				metadata["cooldown_seconds"] = compat.CooldownSeconds
 			}
 			if compat.Priority != 0 {
 				attrs["priority"] = strconv.Itoa(compat.Priority)

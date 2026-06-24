@@ -102,6 +102,21 @@ func quotaCooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabled.Load()
 }
 
+// quotaCooldownBaseForAuth returns the initial 429 cooldown duration for the given auth.
+// When the auth has a per-credential cooldown_seconds override, that value (in seconds)
+// replaces the default quotaBackoffBase. Otherwise the default is returned.
+func quotaCooldownBaseForAuth(auth *Auth) time.Duration {
+	if auth != nil {
+		if override, ok := auth.CooldownSecondsOverride(); ok {
+			d := time.Duration(override) * time.Second
+			if d > 0 {
+				return d
+			}
+		}
+	}
+	return quotaBackoffBase
+}
+
 // Result captures execution outcome used to adjust auth state.
 type Result struct {
 	// AuthID references the auth that produced this result.
@@ -2826,7 +2841,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								if result.RetryAfter != nil {
 									next = now.Add(*result.RetryAfter)
 								} else {
-									cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
+									cooldown, nextLevel := nextQuotaCooldownWithBase(backoffLevel, disableCooling, quotaCooldownBaseForAuth(auth))
 									if cooldown > 0 {
 										next = now.Add(cooldown)
 									}
@@ -3340,7 +3355,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 			if retryAfter != nil {
 				next = now.Add(*retryAfter)
 			} else {
-				cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, disableCooling)
+				cooldown, nextLevel := nextQuotaCooldownWithBase(auth.Quota.BackoffLevel, disableCooling, quotaCooldownBaseForAuth(auth))
 				if cooldown > 0 {
 					next = now.Add(cooldown)
 				}
@@ -3365,15 +3380,25 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.
 func nextQuotaCooldown(prevLevel int, disableCooling bool) (time.Duration, int) {
+	return nextQuotaCooldownWithBase(prevLevel, disableCooling, quotaBackoffBase)
+}
+
+// nextQuotaCooldownWithBase computes the next cooldown using a custom base duration.
+// When baseCooldown differs from the default, subsequent backoff levels still double
+// the cooldown (base * 2^level), capped at quotaBackoffMax.
+func nextQuotaCooldownWithBase(prevLevel int, disableCooling bool, baseCooldown time.Duration) (time.Duration, int) {
 	if prevLevel < 0 {
 		prevLevel = 0
 	}
 	if disableCooling {
 		return 0, prevLevel
 	}
-	cooldown := quotaBackoffBase * time.Duration(1<<prevLevel)
-	if cooldown < quotaBackoffBase {
-		cooldown = quotaBackoffBase
+	if baseCooldown <= 0 {
+		baseCooldown = quotaBackoffBase
+	}
+	cooldown := baseCooldown * time.Duration(1<<prevLevel)
+	if cooldown < baseCooldown {
+		cooldown = baseCooldown
 	}
 	if cooldown >= quotaBackoffMax {
 		return quotaBackoffMax, prevLevel

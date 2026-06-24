@@ -446,6 +446,23 @@ func (a *Auth) RequestRetryOverride() (int, bool) {
 	return 0, false
 }
 
+// CooldownSecondsOverride returns the per-credential 429 cooldown override in seconds
+// when present in metadata. When > 0, it replaces the default quotaBackoffBase (1s)
+// as the initial cooldown duration for 429 responses.
+func (a *Auth) CooldownSecondsOverride() (int, bool) {
+	if a == nil || a.Metadata == nil {
+		return 0, false
+	}
+	if val, ok := a.Metadata["cooldown_seconds"]; ok {
+		if parsed, okParse := parseIntAny(val); okParse {
+			if parsed > 0 {
+				return parsed, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func parseBoolAny(val any) (bool, bool) {
 	switch typed := val.(type) {
 	case bool:

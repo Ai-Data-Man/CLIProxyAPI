@@ -184,6 +184,7 @@ nonstream-keepalive-interval: 0
 #   - api-key: "AIzaSy...01"
 #     prefix: "test" # optional: require calls like "test/gemini-3-pro-preview" to target this credential
 #     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
+#     cooldown-seconds: 0 # optional: override the initial 429 quota cooldown in seconds (default: 1). Backoff still doubles up to 30m max.
 #     base-url: "https://generativelanguage.googleapis.com"
 #     headers:
 #       X-Custom-Header: "custom-value"
@@ -204,6 +205,7 @@ nonstream-keepalive-interval: 0
 #   - api-key: "sk-atSM..."
 #     prefix: "test" # optional: require calls like "test/gpt-5-codex" to target this credential
 #     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
+#     cooldown-seconds: 0 # optional: override the initial 429 quota cooldown in seconds (default: 1). Backoff still doubles up to 30m max.
 #     base-url: "https://www.example.com" # use the custom codex API endpoint
 #     headers:
 #       X-Custom-Header: "custom-value"
@@ -224,6 +226,7 @@ nonstream-keepalive-interval: 0
 #   - api-key: "sk-atSM..."
 #     prefix: "test" # optional: require calls like "test/claude-sonnet-latest" to target this credential
 #     disable-cooling: false # optional: per-auth override for auth/model cooldown scheduling
+#     cooldown-seconds: 0 # optional: override the initial 429 quota cooldown in seconds (default: 1). Backoff still doubles up to 30m max.
 #     base-url: "https://www.example.com" # use the custom claude API endpoint
 #     headers:
 #       X-Custom-Header: "custom-value"
@@ -280,6 +283,7 @@ nonstream-keepalive-interval: 0
 #     prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #     base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
 #     disable-cooling: false # optional: per-provider override for auth/model cooldown scheduling
+#     cooldown-seconds: 0 # optional: override the initial 429 quota cooldown in seconds (default: 1). Backoff still doubles up to 30m max.
 #     headers:
 #       X-Custom-Header: "custom-value"
 #     api-key-entries:
