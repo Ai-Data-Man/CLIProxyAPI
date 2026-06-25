@@ -2705,7 +2705,7 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		}
 		return wait, true
 	}
-	if status != http.StatusTooManyRequests {
+	if status != http.StatusTooManyRequests && status != 529 {
 		return 0, false
 	}
 	if !m.retryAllowed(attempt, providers) {
@@ -2834,7 +2834,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								suspendReason = "not_found"
 								shouldSuspendModel = true
 							}
-						case 429:
+						case 429, 529:
 							var next time.Time
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
@@ -3346,7 +3346,7 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		} else {
 			auth.NextRetryAfter = now.Add(12 * time.Hour)
 		}
-	case 429:
+	case 429, 529:
 		auth.StatusMessage = "quota exhausted"
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
