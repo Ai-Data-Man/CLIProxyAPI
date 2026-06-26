@@ -314,6 +314,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, data)
+	if errEmbedded := detectEmbeddedJSONError(ctx, data); errEmbedded != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errEmbedded)
+		return resp, errEmbedded
+	}
 	if stream {
 		if errValidate := validateClaudeStreamingResponse(data); errValidate != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errValidate)
@@ -481,6 +485,28 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		return nil, err
 	}
+	// Guard: streaming requests expect an SSE response. If the upstream returns
+	// 2xx with a non-SSE content type (e.g. application/json with an embedded
+	// error body such as Zhipu's 1302 rate-limit), buffer and inspect it here
+	// so we can surface a proper error and trigger cooldown via wrapStreamResult.
+	if contentType := httpResp.Header.Get("Content-Type"); !strings.Contains(contentType, "text/event-stream") {
+		buffered, bufErr := io.ReadAll(decodedBody)
+		if errClose := decodedBody.Close(); errClose != nil {
+			log.Errorf("response body close error: %v", errClose)
+		}
+		if bufErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, bufErr)
+			return nil, bufErr
+		}
+		helps.AppendAPIResponseChunk(ctx, e.cfg, buffered)
+		if errEmbedded := detectEmbeddedJSONError(ctx, buffered); errEmbedded != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, errEmbedded)
+			return nil, errEmbedded
+		}
+		// Body is non-SSE but not a JSON error either; fall through with the
+		// buffered bytes so downstream scanners still see the data.
+		decodedBody = io.NopCloser(bytes.NewReader(buffered))
+	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
@@ -561,6 +587,91 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// detectEmbeddedJSONError inspects a 2xx response body for a JSON-level error
+// object. Some upstream providers (e.g. Zhipu via the Anthropic-compatible
+// endpoint) may return HTTP 200 with an error body such as
+// `{"error":{"code":"1302","message":"...rate limit..."}}`. Without this
+// check, the executor would treat the response as success and the conductor
+// would clear the credential's cooldown state, so session-affinity keeps
+// routing to a throttled credential.
+//
+// Returns a statusErr when an error is detected:
+//   - code is taken from the JSON `error.code` when it is an integer,
+//     otherwise mapped: rate-limit indicators (1302, "rate_limit", "rate_limit_error",
+//     "throttled") -> 429 to trigger quota cooldown; anything else -> 502.
+//
+// Returns nil when the body is not a JSON object containing an `error` field,
+// so normal successful responses are unaffected.
+func detectEmbeddedJSONError(ctx context.Context, data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil
+	}
+	if !gjson.ValidBytes(trimmed) {
+		return nil
+	}
+	root := gjson.ParseBytes(trimmed)
+	errField := root.Get("error")
+	if !errField.Exists() || !errField.IsObject() {
+		return nil
+	}
+
+	message := strings.TrimSpace(errField.Get("message").String())
+	typeStr := strings.TrimSpace(errField.Get("type").String())
+	codeRaw := errField.Get("code")
+	codeStr := ""
+	if codeRaw.Exists() {
+		codeStr = strings.TrimSpace(codeRaw.String())
+	}
+
+	if message == "" && typeStr == "" && codeStr == "" {
+		return nil
+	}
+
+	status := http.StatusBadGateway
+	lowerCode := strings.ToLower(codeStr)
+	lowerType := strings.ToLower(typeStr)
+	lowerMsg := strings.ToLower(message)
+	rateLimit := false
+	switch {
+	case codeRaw.Exists() && codeRaw.Type == gjson.Number:
+		if codeRaw.Int() == 1302 || codeRaw.Int() == 429 {
+			status = http.StatusTooManyRequests
+			rateLimit = true
+		}
+	case lowerCode == "1302" || lowerCode == "429":
+		status = http.StatusTooManyRequests
+		rateLimit = true
+	case lowerType == "rate_limit" || lowerType == "rate_limit_error" || lowerType == "throttled":
+		status = http.StatusTooManyRequests
+		rateLimit = true
+	case strings.Contains(lowerMsg, "rate limit") || strings.Contains(lowerMsg, "速率限制") || strings.Contains(lowerMsg, "频率"):
+		status = http.StatusTooManyRequests
+		rateLimit = true
+	}
+
+	desc := message
+	if desc == "" {
+		desc = typeStr
+	}
+	if desc == "" {
+		desc = "code=" + codeStr
+	}
+	if desc == "" {
+		desc = "unknown upstream error"
+	}
+
+	helps.LogWithRequestID(ctx).Warnf(
+		"claude executor: 2xx response carries embedded error body (possible rate limit) | mapped_status=%d original_status=200 rate_limit=%v code=%q type=%q message=%q",
+		status, rateLimit, codeStr, typeStr, message,
+	)
+
+	return statusErr{
+		code: status,
+		msg:  fmt.Sprintf("claude executor: upstream returned 2xx with embedded error: %s", desc),
+	}
 }
 
 func validateClaudeStreamingResponse(data []byte) error {

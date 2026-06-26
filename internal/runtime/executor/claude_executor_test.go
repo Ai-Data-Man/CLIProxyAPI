@@ -2318,3 +2318,71 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 		t.Fatalf("Glob should be restored to glob, got: %s", string(out))
 	}
 }
+
+func TestDetectEmbeddedJSONError_RateLimitWithNumericCode(t *testing.T) {
+	body := []byte(`{"error":{"code":"1302","message":"您的账户已达到速率限制","request_id":"abc"}}`)
+	err := detectEmbeddedJSONError(context.Background(), body)
+	if err == nil {
+		t.Fatalf("expected error for embedded 1302 rate-limit body")
+	}
+	se, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("expected statusErr, got %T: %v", err, err)
+	}
+	if se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d (msg=%q)", se.code, se.msg)
+	}
+	if !strings.Contains(se.msg, "速率限制") && !strings.Contains(se.msg, "rate") {
+		t.Fatalf("error message should contain the upstream text, got: %q", se.msg)
+	}
+}
+
+func TestDetectEmbeddedJSONError_RateLimitTypeField(t *testing.T) {
+	body := []byte(`{"error":{"type":"rate_limit_error","message":"slow down"}}`)
+	err := detectEmbeddedJSONError(context.Background(), body)
+	if err == nil {
+		t.Fatalf("expected error for rate_limit_error type")
+	}
+	if se, ok := err.(statusErr); !ok || se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 statusErr, got %T %v", err, err)
+	}
+}
+
+func TestDetectEmbeddedJSONError_NonRateLimitReturnsBadGateway(t *testing.T) {
+	body := []byte(`{"error":{"code":"internal","message":"boom"}}`)
+	err := detectEmbeddedJSONError(context.Background(), body)
+	if err == nil {
+		t.Fatalf("expected error for embedded generic error body")
+	}
+	se, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("expected statusErr, got %T: %v", err, err)
+	}
+	if se.code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for non-rate-limit error, got %d", se.code)
+	}
+}
+
+func TestDetectEmbeddedJSONError_SuccessBodyUnchanged(t *testing.T) {
+	cases := [][]byte{
+		[]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"model":"claude-3","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`),
+		[]byte(`{"usage":{"input_tokens":10}}`),
+		[]byte(``),
+		[]byte(`not json`),
+		[]byte(`{"foo":"bar"}`),
+	}
+	for i, body := range cases {
+		if err := detectEmbeddedJSONError(context.Background(), body); err != nil {
+			t.Fatalf("case %d: expected nil for success body %q, got %v", i, string(body), err)
+		}
+	}
+}
+
+func TestDetectEmbeddedJSONError_SSEBufferSkipped(t *testing.T) {
+	// SSE buffers contain line-delimited "data: {...}" payloads; the helper
+	// must not mistake the leading "data:" byte ('d') for a JSON object.
+	body := []byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\ndata: {\"type\":\"message_delta\"}\n\n")
+	if err := detectEmbeddedJSONError(context.Background(), body); err != nil {
+		t.Fatalf("SSE buffer should not trigger embedded-error detection, got %v", err)
+	}
+}
