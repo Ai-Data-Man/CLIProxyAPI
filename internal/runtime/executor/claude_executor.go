@@ -607,6 +607,52 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
+// classifyEmbeddedErrorStatus inspects a JSON error object and returns the
+// HTTP status code it should be mapped to. Recognises rate-limit signals:
+// numeric code 1302/1308/429, string "1302"/"1308"/"429",
+// type = rate_limit[_error]/throttled, and message keywords in English/Chinese.
+// Returns 429 when rate-limit indicators are found, 502 otherwise.
+func classifyEmbeddedErrorStatus(errObj gjson.Result) int {
+	codeRaw := errObj.Get("code")
+	typeStr := strings.TrimSpace(errObj.Get("type").String())
+	message := strings.TrimSpace(errObj.Get("message").String())
+
+	lowerCode := strings.ToLower(strings.TrimSpace(codeRaw.String()))
+	lowerType := strings.ToLower(typeStr)
+	lowerMsg := strings.ToLower(message)
+
+	// Numeric code
+	if codeRaw.Exists() && codeRaw.Type == gjson.Number {
+		switch codeRaw.Int() {
+		case 1302, 1308, 429:
+			return http.StatusTooManyRequests
+		}
+	}
+
+	// String code
+	switch lowerCode {
+	case "1302", "1308", "429":
+		return http.StatusTooManyRequests
+	}
+
+	// Type field
+	switch lowerType {
+	case "rate_limit", "rate_limit_error", "throttled":
+		return http.StatusTooManyRequests
+	}
+
+	// Message keywords
+	if strings.Contains(lowerMsg, "rate limit") ||
+		strings.Contains(lowerMsg, "速率限制") ||
+		strings.Contains(lowerMsg, "频率") ||
+		strings.Contains(lowerMsg, "使用上限") ||
+		strings.Contains(lowerMsg, "usage limit") {
+		return http.StatusTooManyRequests
+	}
+
+	return http.StatusBadGateway
+}
+
 // detectEmbeddedJSONError inspects a 2xx response body for a JSON-level error
 // object. Some upstream providers (e.g. Zhipu via the Anthropic-compatible
 // endpoint) may return HTTP 200 with an error body such as
@@ -648,27 +694,7 @@ func detectEmbeddedJSONError(ctx context.Context, data []byte) error {
 		return nil
 	}
 
-	status := http.StatusBadGateway
-	lowerCode := strings.ToLower(codeStr)
-	lowerType := strings.ToLower(typeStr)
-	lowerMsg := strings.ToLower(message)
-	rateLimit := false
-	switch {
-	case codeRaw.Exists() && codeRaw.Type == gjson.Number:
-		if codeRaw.Int() == 1302 || codeRaw.Int() == 1308 || codeRaw.Int() == 429 {
-			status = http.StatusTooManyRequests
-			rateLimit = true
-		}
-	case lowerCode == "1302" || lowerCode == "1308" || lowerCode == "429":
-		status = http.StatusTooManyRequests
-		rateLimit = true
-	case lowerType == "rate_limit" || lowerType == "rate_limit_error" || lowerType == "throttled":
-		status = http.StatusTooManyRequests
-		rateLimit = true
-	case strings.Contains(lowerMsg, "rate limit") || strings.Contains(lowerMsg, "速率限制") || strings.Contains(lowerMsg, "频率"):
-		status = http.StatusTooManyRequests
-		rateLimit = true
-	}
+	status := classifyEmbeddedErrorStatus(errField)
 
 	desc := message
 	if desc == "" {
@@ -683,7 +709,7 @@ func detectEmbeddedJSONError(ctx context.Context, data []byte) error {
 
 	helps.LogWithRequestID(ctx).Warnf(
 		"claude executor: 2xx response carries embedded error body (possible rate limit) | mapped_status=%d original_status=200 rate_limit=%v code=%q type=%q message=%q",
-		status, rateLimit, codeStr, typeStr, message,
+		status, status == http.StatusTooManyRequests, codeStr, typeStr, message,
 	)
 
 	return statusErr{
@@ -740,17 +766,10 @@ func checkClaudeSSEStreamLine(ctx context.Context, rawLine []byte) error {
 		if msg == "" {
 			msg = "unknown upstream SSE error"
 		}
-		// Determine if this is rate-limit related for better mapping
-		errCode := root.Get("error.code")
-		status := http.StatusBadGateway
-		if errCode.Exists() && errCode.Type == gjson.Number {
-			if errCode.Int() == 1302 || errCode.Int() == 1308 || errCode.Int() == 429 {
-				status = http.StatusTooManyRequests
-			}
-		}
+		status := classifyEmbeddedErrorStatus(root.Get("error"))
 		helps.LogWithRequestID(ctx).Warnf(
 			"claude executor: upstream SSE stream error event | mapped_status=%d code=%v type=%q message=%q",
-			status, errCode.Raw, root.Get("error.type").String(), msg,
+			status, root.Get("error.code").Raw, root.Get("error.type").String(), msg,
 		)
 		return statusErr{code: status, msg: "claude executor: upstream SSE error event: " + msg}
 	}
@@ -759,34 +778,17 @@ func checkClaudeSSEStreamLine(ctx context.Context, rawLine []byte) error {
 	errField := root.Get("error")
 	if errField.Exists() && errField.IsObject() {
 		message := strings.TrimSpace(errField.Get("message").String())
-		codeRaw := errField.Get("code")
 		codeStr := ""
-		if codeRaw.Exists() {
+		if codeRaw := errField.Get("code"); codeRaw.Exists() {
 			codeStr = strings.TrimSpace(codeRaw.String())
 		}
 		if message == "" && codeStr == "" {
 			return nil
 		}
-		status := http.StatusBadGateway
-		rateLimit := false
-		if codeRaw.Exists() && codeRaw.Type == gjson.Number {
-			if codeRaw.Int() == 1302 || codeRaw.Int() == 1308 || codeRaw.Int() == 429 {
-				status = http.StatusTooManyRequests
-				rateLimit = true
-			}
-		}
-		switch {
-		case strings.EqualFold(codeStr, "1302"), strings.EqualFold(codeStr, "1308"), strings.EqualFold(codeStr, "429"):
-			status = http.StatusTooManyRequests
-			rateLimit = true
-		case strings.Contains(strings.ToLower(message), "rate limit"), strings.Contains(message, "速率限制"),
-			strings.Contains(message, "频率"), strings.Contains(message, "使用上限"), strings.Contains(message, "usage limit"):
-			status = http.StatusTooManyRequests
-			rateLimit = true
-		}
+		status := classifyEmbeddedErrorStatus(errField)
 		helps.LogWithRequestID(ctx).Warnf(
 			"claude executor: upstream SSE stream error (embedded in data payload) | mapped_status=%d rate_limit=%v code=%q message=%q",
-			status, rateLimit, codeStr, message,
+			status, status == http.StatusTooManyRequests, codeStr, message,
 		)
 		return statusErr{code: status, msg: "claude executor: upstream SSE error in data payload: " + message}
 	}

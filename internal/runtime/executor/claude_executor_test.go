@@ -2416,8 +2416,8 @@ func TestCheckClaudeSSEStreamLine_TypeError(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected statusErr, got %T: %v", err, err)
 	}
-	if se.code != http.StatusBadGateway {
-		t.Fatalf("expected 502 for rate_limit_error without numeric code, got %d", se.code)
+	if se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for type=rate_limit_error, got %d", se.code)
 	}
 }
 
@@ -2472,6 +2472,33 @@ func TestCheckClaudeSSEStreamLine_NormalEventsSkipped(t *testing.T) {
 	for i, line := range lines {
 		if err := checkClaudeSSEStreamLine(context.Background(), line); err != nil {
 			t.Fatalf("case %d: expected nil for normal SSE line %q, got %v", i, string(line), err)
+		}
+	}
+}
+
+func TestClassifyEmbeddedErrorStatus_RateLimitSignals(t *testing.T) {
+	rateLimitCases := []string{
+		`{"code":1302}`, `{"code":1308}`, `{"code":429}`,
+		`{"code":"1302"}`, `{"code":"1308"}`, `{"code":"429"}`,
+		`{"type":"rate_limit"}`, `{"type":"rate_limit_error"}`, `{"type":"throttled"}`,
+		`{"message":"rate limit exceeded"}`, `{"message":"usage limit reached"}`,
+		`{"message":"您的账户已达到速率限制"}`, `{"message":"频率过高"}`, `{"message":"已达到 5 小时的使用上限"}`,
+	}
+	for i, tc := range rateLimitCases {
+		obj := gjson.Parse(tc)
+		if code := classifyEmbeddedErrorStatus(obj); code != http.StatusTooManyRequests {
+			t.Fatalf("case %d: expected 429 for %s, got %d", i, tc, code)
+		}
+	}
+}
+
+func TestClassifyEmbeddedErrorStatus_DefaultsToBadGateway(t *testing.T) {
+	for i, tc := range []string{
+		`{"code":"internal"}`, `{"code":500}`, `{"message":"unknown error"}`, `{"message":"超时"}`,
+	} {
+		obj := gjson.Parse(tc)
+		if code := classifyEmbeddedErrorStatus(obj); code != http.StatusBadGateway {
+			t.Fatalf("case %d: expected 502 for %s, got %d", i, tc, code)
 		}
 	}
 }
