@@ -644,7 +644,7 @@ func classifyEmbeddedErrorStatus(errObj gjson.Result) int {
 	// Message keywords
 	if strings.Contains(lowerMsg, "rate limit") ||
 		strings.Contains(lowerMsg, "速率限制") ||
-		strings.Contains(lowerMsg, "频率") ||
+		strings.Contains(lowerMsg, "频率过高") || strings.Contains(lowerMsg, "请求频率") || strings.Contains(lowerMsg, "访问频率") ||
 		strings.Contains(lowerMsg, "使用上限") ||
 		strings.Contains(lowerMsg, "usage limit") {
 		return http.StatusTooManyRequests
@@ -730,9 +730,14 @@ func checkClaudeSSEStreamLine(ctx context.Context, rawLine []byte) error {
 	}
 
 	// ── Anthropic SSE: `event: error` ──────────────────────────────────
+	// Don't stop the stream here — the next data: line carries the actual
+	// error payload ({"type":"error",...}) which gets classified below.
+	// If no data payload follows we log a warning; the scanner will exit
+	// normally and validateClaudeStreamingResponse will flag the missing
+	// message_start/delta as a downstream 502.
 	if bytes.HasPrefix(line, []byte("event:")) {
 		if strings.EqualFold(string(bytes.TrimSpace(line[len("event:"):])), "error") {
-			return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream SSE event: error"}
+			helps.LogWithRequestID(ctx).Warn("claude executor: upstream SSE event: error — waiting for data payload")
 		}
 		return nil
 	}
@@ -778,11 +783,12 @@ func checkClaudeSSEStreamLine(ctx context.Context, rawLine []byte) error {
 	errField := root.Get("error")
 	if errField.Exists() && errField.IsObject() {
 		message := strings.TrimSpace(errField.Get("message").String())
+		typeStr := strings.TrimSpace(errField.Get("type").String())
 		codeStr := ""
 		if codeRaw := errField.Get("code"); codeRaw.Exists() {
 			codeStr = strings.TrimSpace(codeRaw.String())
 		}
-		if message == "" && codeStr == "" {
+		if message == "" && typeStr == "" && codeStr == "" {
 			return nil
 		}
 		status := classifyEmbeddedErrorStatus(errField)

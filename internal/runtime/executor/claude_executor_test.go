@@ -2394,14 +2394,11 @@ func TestDetectEmbeddedJSONError_SSEBufferSkipped(t *testing.T) {
 	}
 }
 
-func TestCheckClaudeSSEStreamLine_EventError(t *testing.T) {
-	err := checkClaudeSSEStreamLine(context.Background(), []byte("event: error"))
-	if err == nil {
-		t.Fatalf("expected error for SSE event: error")
-	}
-	se, ok := err.(statusErr)
-	if !ok || se.code != http.StatusBadGateway {
-		t.Fatalf("expected 502 statusErr for event: error, got %T %v", err, err)
+func TestCheckClaudeSSEStreamLine_EventErrorDeferredToDataPayload(t *testing.T) {
+	// event: error alone is no longer an immediate error — the next data:
+	// line carries the actual error payload for proper classification.
+	if err := checkClaudeSSEStreamLine(context.Background(), []byte("event: error")); err != nil {
+		t.Fatalf("event: error without data payload should defer, but got: %v", err)
 	}
 }
 
@@ -2428,9 +2425,9 @@ func TestCheckClaudeSSEStreamLine_TypeErrorWithRateLimitCode(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	se := err.(statusErr)
-	if se.code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 for code=429 inside type=error, got %d", se.code)
+	se, ok := err.(statusErr)
+	if !ok || se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 statusErr for code=429 inside type=error, got %T %v", err, err)
 	}
 }
 
@@ -2441,9 +2438,9 @@ func TestCheckClaudeSSEStreamLine_EmbeddedError1302(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for Zhipu 1302 via SSE")
 	}
-	se := err.(statusErr)
-	if se.code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 for 1302, got %d", se.code)
+	se, ok := err.(statusErr)
+	if !ok || se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 statusErr for 1302, got %T %v", err, err)
 	}
 }
 
@@ -2454,9 +2451,9 @@ func TestCheckClaudeSSEStreamLine_EmbeddedError1308(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for Zhipu 1308 via SSE")
 	}
-	se := err.(statusErr)
-	if se.code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 for 1308, got %d", se.code)
+	se, ok := err.(statusErr)
+	if !ok || se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 statusErr for 1308, got %T %v", err, err)
 	}
 }
 
@@ -2468,6 +2465,7 @@ func TestCheckClaudeSSEStreamLine_NormalEventsSkipped(t *testing.T) {
 		[]byte(`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-3"}}`),
 		[]byte(`data: {"type":"content_block_delta","delta":{"text":"hi"}}`),
 		[]byte("event: message_start"),
+		[]byte("event: error"),
 	}
 	for i, line := range lines {
 		if err := checkClaudeSSEStreamLine(context.Background(), line); err != nil {
