@@ -526,6 +526,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 					reporter.Publish(ctx, detail)
 				}
+				if errStream := checkClaudeSSEStreamLine(ctx, line); errStream != nil {
+					helps.RecordAPIResponseError(ctx, e.cfg, errStream)
+					reporter.PublishFailure(ctx, errStream)
+					select {
+					case out <- cliproxyexecutor.StreamChunk{Err: errStream}:
+					case <-ctx.Done():
+					}
+					return
+				}
 				line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 				// Forward the line as-is to preserve SSE format
 				cloned := make([]byte, len(line)+1)
@@ -557,6 +566,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
 				reporter.Publish(ctx, detail)
+			}
+			if errStream := checkClaudeSSEStreamLine(ctx, line); errStream != nil {
+				helps.RecordAPIResponseError(ctx, e.cfg, errStream)
+				reporter.PublishFailure(ctx, errStream)
+				select {
+				case out <- cliproxyexecutor.StreamChunk{Err: errStream}:
+				case <-ctx.Done():
+				}
+				return
 			}
 			line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 			chunks := sdktranslator.TranslateStream(
@@ -637,11 +655,11 @@ func detectEmbeddedJSONError(ctx context.Context, data []byte) error {
 	rateLimit := false
 	switch {
 	case codeRaw.Exists() && codeRaw.Type == gjson.Number:
-		if codeRaw.Int() == 1302 || codeRaw.Int() == 429 {
+		if codeRaw.Int() == 1302 || codeRaw.Int() == 1308 || codeRaw.Int() == 429 {
 			status = http.StatusTooManyRequests
 			rateLimit = true
 		}
-	case lowerCode == "1302" || lowerCode == "429":
+	case lowerCode == "1302" || lowerCode == "1308" || lowerCode == "429":
 		status = http.StatusTooManyRequests
 		rateLimit = true
 	case lowerType == "rate_limit" || lowerType == "rate_limit_error" || lowerType == "throttled":
@@ -672,6 +690,108 @@ func detectEmbeddedJSONError(ctx context.Context, data []byte) error {
 		code: status,
 		msg:  fmt.Sprintf("claude executor: upstream returned 2xx with embedded error: %s", desc),
 	}
+}
+
+// checkClaudeSSEStreamLine inspects one line from an upstream SSE stream.
+// It detects error events that the goroutine in ExecuteStream would otherwise
+// blindly forward — either Anthropic's `event: error` / `{"type":"error",...}` pattern
+// or a Zhipu-style embedded `{"error":{"code":"...","message":"..."}}` inside a `data:` payload.
+// Returns nil for non-error lines (normal SSE data, comments, keepalive, etc.).
+func checkClaudeSSEStreamLine(ctx context.Context, rawLine []byte) error {
+	line := bytes.TrimSpace(rawLine)
+	if len(line) == 0 {
+		return nil
+	}
+
+	// ── Anthropic SSE: `event: error` ──────────────────────────────────
+	if bytes.HasPrefix(line, []byte("event:")) {
+		if strings.EqualFold(string(bytes.TrimSpace(line[len("event:"):])), "error") {
+			return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream SSE event: error"}
+		}
+		return nil
+	}
+
+	// ── Skip non-data lines (comments, empty, field values without handler) ──
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return nil
+	}
+	payload := bytes.TrimSpace(line[len("data:"):])
+	if len(payload) == 0 {
+		return nil
+	}
+
+	// ── `data: [DONE]` sentinel ────────────────────────────────────────
+	if bytes.Equal(payload, []byte("[DONE]")) {
+		return nil
+	}
+
+	// ── Only care about JSON payloads ──────────────────────────────────
+	if payload[0] != '{' || !gjson.ValidBytes(payload) {
+		return nil
+	}
+	root := gjson.ParseBytes(payload)
+
+	// ── Anthropic SSE: `{"type":"error","error":{...}}` ────────────────
+	if root.Get("type").String() == "error" {
+		msg := strings.TrimSpace(root.Get("error.message").String())
+		if msg == "" {
+			msg = strings.TrimSpace(root.Get("error.type").String())
+		}
+		if msg == "" {
+			msg = "unknown upstream SSE error"
+		}
+		// Determine if this is rate-limit related for better mapping
+		errCode := root.Get("error.code")
+		status := http.StatusBadGateway
+		if errCode.Exists() && errCode.Type == gjson.Number {
+			if errCode.Int() == 1302 || errCode.Int() == 1308 || errCode.Int() == 429 {
+				status = http.StatusTooManyRequests
+			}
+		}
+		helps.LogWithRequestID(ctx).Warnf(
+			"claude executor: upstream SSE stream error event | mapped_status=%d code=%v type=%q message=%q",
+			status, errCode.Raw, root.Get("error.type").String(), msg,
+		)
+		return statusErr{code: status, msg: "claude executor: upstream SSE error event: " + msg}
+	}
+
+	// ── Zhipu / generic embedded error: `{"error":{"code":"...","message":"..."}}` ──
+	errField := root.Get("error")
+	if errField.Exists() && errField.IsObject() {
+		message := strings.TrimSpace(errField.Get("message").String())
+		codeRaw := errField.Get("code")
+		codeStr := ""
+		if codeRaw.Exists() {
+			codeStr = strings.TrimSpace(codeRaw.String())
+		}
+		if message == "" && codeStr == "" {
+			return nil
+		}
+		status := http.StatusBadGateway
+		rateLimit := false
+		if codeRaw.Exists() && codeRaw.Type == gjson.Number {
+			if codeRaw.Int() == 1302 || codeRaw.Int() == 1308 || codeRaw.Int() == 429 {
+				status = http.StatusTooManyRequests
+				rateLimit = true
+			}
+		}
+		switch {
+		case strings.EqualFold(codeStr, "1302"), strings.EqualFold(codeStr, "1308"), strings.EqualFold(codeStr, "429"):
+			status = http.StatusTooManyRequests
+			rateLimit = true
+		case strings.Contains(strings.ToLower(message), "rate limit"), strings.Contains(message, "速率限制"),
+			strings.Contains(message, "频率"), strings.Contains(message, "使用上限"), strings.Contains(message, "usage limit"):
+			status = http.StatusTooManyRequests
+			rateLimit = true
+		}
+		helps.LogWithRequestID(ctx).Warnf(
+			"claude executor: upstream SSE stream error (embedded in data payload) | mapped_status=%d rate_limit=%v code=%q message=%q",
+			status, rateLimit, codeStr, message,
+		)
+		return statusErr{code: status, msg: "claude executor: upstream SSE error in data payload: " + message}
+	}
+
+	return nil
 }
 
 func validateClaudeStreamingResponse(data []byte) error {

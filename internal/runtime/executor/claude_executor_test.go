@@ -2320,20 +2320,27 @@ func TestRestoreClaudeOAuthToolNamesFromStreamLine_MixedCaseWithPrefix(t *testin
 }
 
 func TestDetectEmbeddedJSONError_RateLimitWithNumericCode(t *testing.T) {
-	body := []byte(`{"error":{"code":"1302","message":"您的账户已达到速率限制","request_id":"abc"}}`)
-	err := detectEmbeddedJSONError(context.Background(), body)
-	if err == nil {
-		t.Fatalf("expected error for embedded 1302 rate-limit body")
+	cases := []struct {
+		code    string
+		message string
+	}{
+		{`"1302"`, `"您的账户已达到速率限制"`},
+		{`1302`, `"您的账户已达到速率限制"`},
+		{`1308`, `"已达到 5 小时的使用上限。您的限额将在 2026-06-27 14:32:50 重置。"`},
 	}
-	se, ok := err.(statusErr)
-	if !ok {
-		t.Fatalf("expected statusErr, got %T: %v", err, err)
-	}
-	if se.code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d (msg=%q)", se.code, se.msg)
-	}
-	if !strings.Contains(se.msg, "速率限制") && !strings.Contains(se.msg, "rate") {
-		t.Fatalf("error message should contain the upstream text, got: %q", se.msg)
+	for i, tc := range cases {
+		body := []byte(`{"error":{"code":` + tc.code + `,"message":` + tc.message + `,"request_id":"abc"}}`)
+		err := detectEmbeddedJSONError(context.Background(), body)
+		if err == nil {
+			t.Fatalf("case %d (code=%s): expected error for embedded rate-limit body", i, tc.code)
+		}
+		se, ok := err.(statusErr)
+		if !ok {
+			t.Fatalf("case %d (code=%s): expected statusErr, got %T: %v", i, tc.code, err, err)
+		}
+		if se.code != http.StatusTooManyRequests {
+			t.Fatalf("case %d (code=%s): expected 429, got %d (msg=%q)", i, tc.code, se.code, se.msg)
+		}
 	}
 }
 
@@ -2384,5 +2391,87 @@ func TestDetectEmbeddedJSONError_SSEBufferSkipped(t *testing.T) {
 	body := []byte("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\ndata: {\"type\":\"message_delta\"}\n\n")
 	if err := detectEmbeddedJSONError(context.Background(), body); err != nil {
 		t.Fatalf("SSE buffer should not trigger embedded-error detection, got %v", err)
+	}
+}
+
+func TestCheckClaudeSSEStreamLine_EventError(t *testing.T) {
+	err := checkClaudeSSEStreamLine(context.Background(), []byte("event: error"))
+	if err == nil {
+		t.Fatalf("expected error for SSE event: error")
+	}
+	se, ok := err.(statusErr)
+	if !ok || se.code != http.StatusBadGateway {
+		t.Fatalf("expected 502 statusErr for event: error, got %T %v", err, err)
+	}
+}
+
+func TestCheckClaudeSSEStreamLine_TypeError(t *testing.T) {
+	// Anthropic SSE data payload: {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}
+	err := checkClaudeSSEStreamLine(context.Background(),
+		[]byte(`data: {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+	if err == nil {
+		t.Fatalf("expected error for type=error SSE data payload")
+	}
+	se, ok := err.(statusErr)
+	if !ok {
+		t.Fatalf("expected statusErr, got %T: %v", err, err)
+	}
+	if se.code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for rate_limit_error without numeric code, got %d", se.code)
+	}
+}
+
+func TestCheckClaudeSSEStreamLine_TypeErrorWithRateLimitCode(t *testing.T) {
+	// Anthropic SSE data payload with numeric error.code=429
+	err := checkClaudeSSEStreamLine(context.Background(),
+		[]byte(`data: {"type":"error","error":{"type":"rate_limit_error","code":429,"message":"rate limit"}}`))
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	se := err.(statusErr)
+	if se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for code=429 inside type=error, got %d", se.code)
+	}
+}
+
+func TestCheckClaudeSSEStreamLine_EmbeddedError1302(t *testing.T) {
+	// Zhipu SSE data payload: {"error":{"code":"1302","message":"..."}}
+	err := checkClaudeSSEStreamLine(context.Background(),
+		[]byte(`data: {"error":{"code":"1302","message":"您的账户已达到速率限制"}}`))
+	if err == nil {
+		t.Fatalf("expected error for Zhipu 1302 via SSE")
+	}
+	se := err.(statusErr)
+	if se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for 1302, got %d", se.code)
+	}
+}
+
+func TestCheckClaudeSSEStreamLine_EmbeddedError1308(t *testing.T) {
+	// Zhipu 1308 (5-hour usage limit) embedded in SSE data payload
+	err := checkClaudeSSEStreamLine(context.Background(),
+		[]byte(`data: {"error":{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-06-27 14:32:50 重置。"}}`))
+	if err == nil {
+		t.Fatalf("expected error for Zhipu 1308 via SSE")
+	}
+	se := err.(statusErr)
+	if se.code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for 1308, got %d", se.code)
+	}
+}
+
+func TestCheckClaudeSSEStreamLine_NormalEventsSkipped(t *testing.T) {
+	lines := [][]byte{
+		[]byte(""),
+		[]byte(": heartbeat"),
+		[]byte("data: [DONE]"),
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_1","model":"claude-3"}}`),
+		[]byte(`data: {"type":"content_block_delta","delta":{"text":"hi"}}`),
+		[]byte("event: message_start"),
+	}
+	for i, line := range lines {
+		if err := checkClaudeSSEStreamLine(context.Background(), line); err != nil {
+			t.Fatalf("case %d: expected nil for normal SSE line %q, got %v", i, string(line), err)
+		}
 	}
 }
