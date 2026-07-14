@@ -252,6 +252,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"compat_name":  compat.Name,
 				"provider_key": providerName,
 			}
+			// entry_index allows the management API to locate the exact
+			// api-key-entry within the provider block when toggling disabled.
+			attrs["entry_index"] = strconv.Itoa(j)
 			metadata := map[string]any{}
 			if disableCooling {
 				metadata["disable_cooling"] = true
@@ -280,6 +283,13 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				Metadata:   metadata,
 				CreatedAt:  now,
 				UpdatedAt:  now,
+			}
+			// Honor per-entry disabled flag from config so the scheduler skips
+			// this credential while the management API keeps it visible.
+			if entry.Disabled {
+				a.Disabled = true
+				a.Status = coreauth.StatusDisabled
+				a.StatusMessage = "disabled via config"
 			}
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil

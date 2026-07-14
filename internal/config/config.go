@@ -693,6 +693,11 @@ type OpenAICompatibilityAPIKey struct {
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// Disabled marks this API key as temporarily disabled. When true, the
+	// synthesized runtime auth is skipped during scheduling (manual toggling),
+	// while still being listed in the management API so it can be re-enabled.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 }
 
 // OpenAICompatibilityModel represents a model configuration for OpenAI compatibility,

@@ -646,3 +646,60 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigSynthesizer_OpenAICompat_DisabledEntry verifies that a disabled
+// api-key-entry is still synthesized (so the management API can list and
+// re-enable it) but carries Disabled=true, StatusDisabled, entry_index, and
+// compat_name attributes.
+func TestConfigSynthesizer_OpenAICompat_DisabledEntry(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:    "MixedProvider",
+					BaseURL: "https://mixed.api.com",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "active-key"},
+						{APIKey: "disabled-key", Disabled: true},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 2 {
+		t.Fatalf("expected 2 auths (disabled entry kept visible), got %d", len(auths))
+	}
+
+	// First entry: active
+	if auths[0].Disabled {
+		t.Errorf("expected auth[0] active, got Disabled=true")
+	}
+	if auths[0].Status != coreauth.StatusActive {
+		t.Errorf("expected auth[0] StatusActive, got %s", auths[0].Status)
+	}
+	if auths[0].Attributes["entry_index"] != "0" {
+		t.Errorf("expected auth[0] entry_index=0, got %q", auths[0].Attributes["entry_index"])
+	}
+
+	// Second entry: disabled via config
+	if !auths[1].Disabled {
+		t.Errorf("expected auth[1] Disabled=true, got false")
+	}
+	if auths[1].Status != coreauth.StatusDisabled {
+		t.Errorf("expected auth[1] StatusDisabled, got %s", auths[1].Status)
+	}
+	if auths[1].Attributes["entry_index"] != "1" {
+		t.Errorf("expected auth[1] entry_index=1, got %q", auths[1].Attributes["entry_index"])
+	}
+	if auths[1].Attributes["compat_name"] != "MixedProvider" {
+		t.Errorf("expected auth[1] compat_name=MixedProvider, got %q", auths[1].Attributes["compat_name"])
+	}
+}
