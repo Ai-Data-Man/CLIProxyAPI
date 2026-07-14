@@ -28,7 +28,6 @@ import (
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/gemini"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -458,9 +457,8 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return nil
 	}
-	compatConfig := isOpenAICompatConfigAuth(auth)
 	path := strings.TrimSpace(authAttribute(auth, "path"))
-	if path == "" && !runtimeOnly && !compatConfig {
+	if path == "" && !runtimeOnly {
 		return nil
 	}
 	name := strings.TrimSpace(auth.FileName)
@@ -564,13 +562,6 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
-	}
-	if compatConfig {
-		entry["compat_name"] = strings.TrimSpace(authAttribute(auth, "compat_name"))
-		if idx := strings.TrimSpace(authAttribute(auth, "entry_index")); idx != "" {
-			entry["entry_index"] = idx
-		}
-		entry["config_managed"] = true
 	}
 	return entry
 }
@@ -700,23 +691,6 @@ func isRuntimeOnlyAuth(auth *coreauth.Auth) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["runtime_only"]), "true")
-}
-
-// isOpenAICompatConfigAuth reports whether auth is a runtime entry synthesized
-// from an openai-compatibility api-key-entry. Such entries have no backing file
-// (path is empty, runtime_only is unset) but are individually toggleable via
-// the management API by writing back to the config provider block.
-func isOpenAICompatConfigAuth(auth *coreauth.Auth) bool {
-	if auth == nil || len(auth.Attributes) == 0 {
-		return false
-	}
-	if strings.TrimSpace(authAttribute(auth, "compat_name")) == "" {
-		return false
-	}
-	if strings.TrimSpace(authAttribute(auth, "entry_index")) == "" {
-		return false
-	}
-	return strings.TrimSpace(authAttribute(auth, "provider_key")) != "" || auth.Provider != ""
 }
 
 func isUnsafeAuthFileName(name string) bool {
@@ -1290,76 +1264,12 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 	targetAuth.UpdatedAt = time.Now()
 
-	// For openai-compatibility config-synthesized credentials, persist the
-	// per-entry disabled flag back to config.yaml FIRST so a failed write
-	// leaves the in-memory state untouched (avoids run-time/ondisk mismatch).
-	// The watcher's file reload will re-synthesize and refresh the auth.
-	if isOpenAICompatConfigAuth(targetAuth) && h.cfg != nil && h.configFilePath != "" {
-		if !h.applyOpenAICompatEntryDisabled(c, targetAuth, *req.Disabled) {
-			return
-		}
-		// config persisted; apply the new disabled state to the running auth
-		if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
-			log.WithError(err).Error("failed to apply disabled state to in-memory auth after config writeback")
-		}
-		return
-	}
-
-	// Non-config-managed auth: update in-memory state only.
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
-}
-
-// applyOpenAICompatEntryDisabled writes the disabled state of a single
-// openai-compatibility api-key-entry back to config.yaml. It locates the
-// provider block by compat_name and the entry by entry_index, updates the
-// in-memory config and persists it (preserving comments). It owns the HTTP
-// response on both success and failure paths; returns false when the
-// response has already been written due to an error.
-func (h *Handler) applyOpenAICompatEntryDisabled(c *gin.Context, auth *coreauth.Auth, disabled bool) bool {
-	compatName := strings.TrimSpace(authAttribute(auth, "compat_name"))
-	if compatName == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "missing compat_name for config-managed credential"})
-		return false
-	}
-	idxStr := strings.TrimSpace(authAttribute(auth, "entry_index"))
-	entryIdx, err := strconv.Atoi(idxStr)
-	if err != nil || entryIdx < 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid entry_index for config-managed credential"})
-		return false
-	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	targetIndex := -1
-	for i := range h.cfg.OpenAICompatibility {
-		if h.cfg.OpenAICompatibility[i].Name == compatName {
-			targetIndex = i
-			break
-		}
-	}
-	if targetIndex == -1 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "openai-compatibility provider block not found"})
-		return false
-	}
-	entry := h.cfg.OpenAICompatibility[targetIndex]
-	if entryIdx >= len(entry.APIKeyEntries) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "api-key-entry index out of range"})
-		return false
-	}
-	// APIKeyEntries is a slice; mutate the element directly through the backing array.
-	h.cfg.OpenAICompatibility[targetIndex].APIKeyEntries[entryIdx].Disabled = disabled
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
-		return false
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": disabled})
-	return true
 }
 
 // PatchAuthFileFields updates arbitrary metadata fields of an auth file.
